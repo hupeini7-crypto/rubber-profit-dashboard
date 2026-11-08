@@ -1,0 +1,21 @@
+# 数据源与中间产物不上传（页面数据已内嵌于 HTML）
+*.xlsx
+site_data.json
+
+# 运行日志 / 探查输出
+*_out.txt
+refresh_log.txt
+generated-images/
+
+# WorkBuddy 工作区数据
+.workbuddy/
+
+# 内部文档（含公司本地路径，不随公开仓库发布）
+项目现状与进展总结.md
+
+# 临时脚本（8901/8899 陈旧启动器不随仓库发布）
+launch2.py
+
+# Python
+__pycache__/
+*.pyc
