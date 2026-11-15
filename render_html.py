@@ -129,7 +129,7 @@ HTML = r'''<!DOCTYPE html>
   <!-- 四、联动分析 -->
   <div class="sec">
     <h2>产业链联动分析（结构响应 · 盘面联动）</h2>
-    <div class="note">联动基于现有数据；频率切换为日度向下聚合（周=当周有效观测均值，月=当月有效观测均值），按共同时间窗对齐，并展示匹配覆盖率、有效样本量 n、统计周期与数据截至日，绝不将低频数据伪造为日度。涉及<b>周度经营指标</b>（产能利用率/产量/库存天数）的对，默认<b>按周对齐</b>。<b>切换“对比方式（水平值/差分/涨跌幅）”或频率时，相关系数 r、有效样本量 n、覆盖率、领先滞后与自动结论均会同步重新计算（在 Python 端按所选模式与频率真实重算，非沿用）。</b>相关性/领先滞后仅基于真实匹配样本。<b>结构响应型</b>可解读产业内部传导规律（利润→开工→产量→库存等）；<b>盘面联动型</b>研究产业指标（收益/利润/价差/开工/产量/库存）与 NR 盘面价格的关系，相关性≠因果、不构成价格预测。<span class="tag struct">结构响应</span><span class="tag nr">盘面联动</span></div>
+    <div class="note">联动基于现有数据；频率切换为日度向下聚合（周=当周有效观测均值，月=当月有效观测均值），按共同时间窗对齐，并展示匹配覆盖率、有效样本量 n、统计周期与数据截至日，绝不将低频数据伪造为日度。涉及<b>周度经营指标</b>（产能利用率/产量/库存天数）的对，默认<b>按周对齐</b>。<b>切换"对比方式（水平值/差分/涨跌幅）"或频率时，相关系数 r、有效样本量 n、覆盖率、领先滞后与自动结论均会同步重新计算（在 Python 端按所选模式与频率真实重算，非沿用）。</b>支持<b>自定义滞后</b>：对当前联动对选择"Y 滞后 k 期"（k=0 为同步），r 与 n 在 Python 端按该模式×频率真实重算（日度 0–20 期、周度 0–8 期、月度 0–6 期；滞后 1 期=该频率下一个样本间隔）。<b>相关矩阵</b>给出核心 10 指标 + NR 收盘价的<b>一阶差分相关</b>（避免水平趋势伪相关），全员统一聚合到周频，或仅日度指标的日频版本；|r|≥0.5 深色显著、0.3–0.5 中等、&lt;0.3 弱。相关性/领先滞后仅基于真实匹配样本。<b>结构响应型</b>可解读产业内部传导规律（利润→开工→产量→库存等）；<b>盘面联动型</b>研究产业指标（收益/利润/价差/开工/产量/库存）与 NR 盘面价格的关系，相关性≠因果、不构成价格预测。<span class="tag struct">结构响应</span><span class="tag nr">盘面联动</span></div>
     <div class="controls">
       <label>频率：</label>
       <button class="btn active" data-f="daily" onclick="setFreq('daily')">日度</button>
@@ -141,6 +141,8 @@ HTML = r'''<!DOCTYPE html>
       <button class="btn" data-m="return" onclick="setMode('return')">涨跌幅(%)</button>
       <label>联动对：</label>
       <select id="pair-sel" onchange="onPairChange()"></select>
+      <label>自定义滞后（Y 滞后）：</label>
+      <select id="lag-sel" onchange="drawLink()"></select>
     </div>
     <div class="lk-grid">
       <div><div class="lk-chart" id="lk-line"></div></div>
@@ -149,6 +151,14 @@ HTML = r'''<!DOCTYPE html>
         <div class="lk-chart" id="lk-lag" style="height:260px;"></div>
       </div>
     </div>
+    <h3 style="margin:22px 0 8px;color:#0f4c81;font-size:15px;">跨指标相关矩阵（核心 10 + NR收盘价，一阶差分相关）</h3>
+    <div class="controls" id="cm-controls" style="margin-bottom:8px;">
+      <label>矩阵版本：</label>
+      <button class="btn active" data-cm="weekly" onclick="setCorrMode('weekly')">周频（全员 11 项，统一聚合）</button>
+      <button class="btn" data-cm="daily" onclick="setCorrMode('daily')">日频（仅日度指标）</button>
+    </div>
+    <div class="note" id="cm-note"></div>
+    <div id="corr-heatmap" style="height:560px;"></div>
   </div>
 
   <div class="sec">
@@ -195,7 +205,7 @@ function renderSummary(){
   document.getElementById('outlook').innerHTML = buildOutlook();
   renderUpstreamSpread();
   renderDownstreamOp();
-  renderOctWindow();
+  renderMonthWindow();
 }
 function moverLi(d,improving){
   const cls = d.chg20>0?'up':'down';
@@ -296,22 +306,24 @@ function renderDownstreamOp(){
   el.innerHTML=h;
 }
 
-/* 轮胎指标 · 国庆(10月)窗口与往年同期对比 */
-function renderOctWindow(){
-  const arr=P.summary.oct_window||[];
+/* 轮胎指标 · 最新月度窗口与往年同期对比 */
+function renderMonthWindow(){
+  const arr=P.summary.month_window||[];
   const el=document.getElementById('downstream-op');
   if(!arr.length) return;
-  const note=P.summary.oct_note||'';
-  let h='<h4 style="font-size:13.5px;margin:16px 0 8px;color:#0f4c81;">轮胎指标 · 国庆(10月)窗口与往年同期对比 <span class="tag fact">事实对照</span></h4>';
-  h+='<div class="note" style="margin-bottom:8px;">逻辑：检查 10月9日前后轮胎指标波动是否受节假日与统计周期影响。下表取每年 10/1–10/15 区间均值，与 2023/2024/2025 同年窗口均值比较。'+note+'</div>';
-  h+='<table class="drivers" style="margin-top:6px;"><thead><tr><th>指标</th><th>单位</th><th>2023</th><th>2024</th><th>2025</th><th>2026(10/1–15)</th><th>往年均值</th><th>差值</th><th>信号</th></tr></thead><tbody>';
+  const note=P.summary.month_note||'';
+  const wm=P.summary.month_window_meta||{};
+  const curYear=wm.year||2026;
+  let h='<h4 style="font-size:13.5px;margin:16px 0 8px;color:#0f4c81;">轮胎指标 · 最新月度窗口与往年同期对比（'+(wm.desc||'')+'）<span class="tag fact">事实对照</span></h4>';
+  h+='<div class="note" style="margin-bottom:8px;">逻辑：窗口随数据更新自动推进（当前 = '+(wm.desc||'')+'；当月观测不足 n&lt;2 时自动回退上一个完整月份）。下表取各年同月同日范围区间均值，与 2023/2024/2025 同窗口均值比较（单元格后括号内为样本数 n）。'+note+'</div>';
+  h+='<table class="drivers" style="margin-top:6px;"><thead><tr><th>指标</th><th>单位</th><th>2023</th><th>2024</th><th>2025</th><th>'+curYear+'（当前窗口）</th><th>往年均值</th><th>差值</th><th>信号</th></tr></thead><tbody>';
   for(const o of arr){
-    const v=o.values;
-    const cell=y=> (y in v)? v[y].toFixed(1):'—';
+    const v=o.values, ns=o.ns||{};
+    const cell=y=> (y in v)? v[y].toFixed(1)+' <span style="font-size:10px;color:#94a3b8;">(n='+ns[y]+')</span>':'—';
     const dcls = o.delta>0?'up':'down';
     h+='<tr><td>'+o.name+'</td><td>'+o.unit+'</td>'+
        '<td>'+cell(2023)+'</td><td>'+cell(2024)+'</td><td>'+cell(2025)+'</td>'+
-       '<td><b>'+v[2026].toFixed(1)+'</b></td><td>'+o.prev_avg.toFixed(1)+'</td>'+
+       '<td><b>'+v[curYear].toFixed(1)+'</b> <span style="font-size:10px;color:#94a3b8;">(n='+ns[curYear]+')</span></td><td>'+o.prev_avg.toFixed(1)+'</td>'+
        '<td class="'+dcls+'">'+(o.delta>0?'+':'')+o.delta.toFixed(1)+'</td>'+
        '<td>'+o.flag+'</td></tr>';
   }
@@ -440,6 +452,7 @@ function onPairChange(){
   const f = l.def_freq || 'daily';
   curFreq=f;
   document.querySelectorAll('.controls .btn[data-f]').forEach(b=>b.classList.toggle('active', b.dataset.f===f));
+  document.getElementById('lag-sel').value=0;
   drawLink();
 }
 function initPairSel(){
@@ -477,16 +490,67 @@ function renderDivScan(){
   h+='</tbody></table>';
   el.innerHTML=h;
 }
+
+/* ---------- 跨指标相关矩阵（核心 10 + NR收盘价，一阶差分相关） ---------- */
+let cmMode='weekly', __cmEc=null;
+function setCorrMode(m){
+  cmMode=m;
+  document.querySelectorAll('#cm-controls .btn').forEach(b=>b.classList.toggle('active', b.dataset.cm===m));
+  renderCorrMatrix();
+}
+function renderCorrMatrix(){
+  const cm=(P.summary.corr_matrix||{})[cmMode];
+  const note=document.getElementById('cm-note');
+  const el=document.getElementById('corr-heatmap');
+  if(!cm||!cm.labels||cm.labels.length<2){
+    note.textContent='相关矩阵样本不足，暂不可用。';
+    if(__cmEc)__cmEc.clear(); return;
+  }
+  note.innerHTML='<b>方法：</b>成员 <b>'+cm.labels.length+'</b> 个（核心 10 指标 + NR收盘价'+(cmMode==='weekly'?'；全员统一聚合到周频（W均值）保证频率一致':'；仅日度指标，周度经营指标因频率不一致不纳入')+'）→ <b>'+cm.transform+'</b> → 皮尔逊相关；仅纳入重叠样本 ≥'+cm.min_overlap+' 的对，不足显示 —；统计周期 '+cm.start+' ~ '+cm.end+'。'+cm.note+'。<b>读法：</b>r 越接近 +1 两者变化越同向（红），越接近 −1 越反向（蓝）；差分相关度量“同涨同跌”的一致性，相关性≠因果。';
+  const L=cm.labels, data=[];
+  for(let i=0;i<L.length;i++)for(let j=0;j<L.length;j++)data.push([j,i,cm.r[i][j]]);
+  if(!__cmEc)__cmEc=echarts.init(el);
+  __cmEc.setOption({
+    tooltip:{position:'top', confine:true, formatter:function(p){
+      const i=p.value[1], j=p.value[0];
+      return L[i]+' ↔ '+L[j]+'<br>r='+(cm.r[i][j]==null?'—':cm.r[i][j])+'<br>重叠样本 n='+cm.n[i][j];
+    }},
+    grid:{left:8,right:8,top:8,bottom:110,containLabel:true},
+    xAxis:{type:'category', data:L, axisLabel:{fontSize:9, rotate:55, interval:0}},
+    yAxis:{type:'category', data:L, axisLabel:{fontSize:9}, inverse:true},
+    visualMap:{min:-1, max:1, calculable:true, orient:'horizontal', left:'center', bottom:0,
+      inRange:{color:['#2563eb','#f8fafc','#dc2626']}, textStyle:{fontSize:10}},
+    series:[{type:'heatmap', data:data,
+      label:{show:true, fontSize:8, formatter:p=>p.value[2]==null?'—':Number(p.value[2]).toFixed(2)},
+      itemStyle:{borderColor:'#fff', borderWidth:1},
+      emphasis:{itemStyle:{shadowBlur:6, shadowColor:'rgba(0,0,0,0.3)'}}}]
+  },true);
+}
 let lkLineEc, lkLagEc;
+function lagUnit(){ return curFreq==='daily'?'日':(curFreq==='monthly'?'月':'期'); }
 function drawLink(){
   const i=+document.getElementById('pair-sel').value;
   const l=P.linkage[i];
   const modeObj = l.modes[curMode] || l.modes['level'];
   const f = modeObj.freqs[curFreq];
   const ll = modeObj.leadlag;
+  const ls = (modeObj.lag_scan||{})[curFreq];
   const concl = modeObj.concl;
   const corrBox=document.getElementById('lk-corr');
   const typeTag = l.group==='nr'?'<span class="tag nr">盘面联动</span>':'<span class="tag struct">结构响应</span>';
+  /* 自定义滞后选择器（随联动对/模式/频率重建，保持用户已选值） */
+  const lagSel=document.getElementById('lag-sel');
+  const prevLag=+lagSel.value||0;
+  if(ls && ls.lags && ls.lags.length){
+    let opts='';
+    ls.lags.forEach(L=>{
+      const lbl = L===0 ? '同步(0'+lagUnit()+')' : 'Y滞后'+L+lagUnit()+'（X领先'+L+'）';
+      opts+='<option value="'+L+'"'+(prevLag===L?' selected':'')+'>'+lbl+'</option>';
+    });
+    lagSel.innerHTML=opts;
+  } else {
+    lagSel.innerHTML='<option value="">—（该频率未提供滞后扫描）</option>';
+  }
   if(!f){
     corrBox.innerHTML='<b>'+l.id+'</b> '+typeTag+'<br><b>样本不足</b><br>该频率下无足够匹配样本（n&lt;3），无法计算相关性。';
     if(lkLineEc)lkLineEc.clear(); if(lkLagEc)lkLagEc.clear(); return;
@@ -495,6 +559,12 @@ function drawLink(){
   const xName=l.xlabel+' ('+l.unit_x+(curMode==='diff'?'·变化额':(curMode==='return'?'·%':''))+')';
   const yName=l.ylabel+' ('+l.unit_y+(curMode==='diff'?'·变化额':(curMode==='return'?'·%':''))+')';
   let html='<b>'+l.id+'</b> '+typeTag+'<br>X：'+l.xlabel+'（'+l.unit_x+'）<br>Y：'+l.ylabel+'（'+l.unit_y+'）<br>相关系数 r = <b>'+(f.corr==null?'—（不适用）':f.corr)+'</b> ｜ 有效样本 n='+f.n+' ｜ 匹配覆盖率 '+f.coverage+'%<br>统计周期：'+f.start+' ~ '+f.end+' ｜ 日度截至 '+P.meta.asof_daily+' ｜ 周度(经营)截至 '+P.meta.asof_weekly+' ｜ 对齐频率：'+(curFreq==='weekly'?'周度(默认)':curFreq)+'<br>当前对比（已重算）：'+modeTxt+'<br><span class="disclaim">'+l.link_caveat+'</span>';
+  if(ls){
+    const k=+lagSel.value||0;
+    const idx=ls.lags.indexOf(k);
+    const r=idx>=0?ls.corrs[idx]:null, n=idx>=0?ls.ns[idx]:null;
+    html+='<div class="concl"><b>自定义滞后：Y 滞后 '+k+' '+lagUnit()+'（X 领先 '+k+'）</b><br>r = <b>'+(r==null?'样本不足':r)+'</b> ｜ 有效样本 n='+n+' ｜ 该模式×频率全扫描最优：滞后 '+ls.best_lag+' '+lagUnit()+'（r='+ls.best_corr+'）<br><span class="disclaim">滞后 k = corr(x_t, y_{t-k})；样本量随滞后增大而减少；滞后相关≠因果，不构成价格预测。</span></div>';
+  }
   if(concl){ html+='<div class="concl"><b>自动分析结论（'+modeTxt+'，已重算）</b><br>'+concl+'</div>'; }
   corrBox.innerHTML=html;
   if(!lkLineEc) lkLineEc=echarts.init(document.getElementById('lk-line'));
@@ -532,7 +602,7 @@ document.getElementById('foot-note').innerHTML =
   '<br><b>口径说明：</b>泰国胶农收益/割胶工收入按表列“（元/天）”疑已折算人民币；人民币兑泰铢=泰铢/人民币（上升=人民币升值）；美元兑人民币=人民币/美元（上升=美元升值）。全钢/半钢轮胎利润统一单位为<b>元/吨</b>（基于单条轮胎价格、重量、材料成本系数及固定成本假设的<b>理论利润</b>，模型口径待确认，不作实际经营利润引用）；上游两价差仅作<b>事实展示</b>，方向/干胶折算/加工成本未独立核实，不直接推导加工利润优势。'+
   '<br><b>地区口径差异：</b>产能利用率为“中国（全国）”口径，产量与库存可用天数为“山东”口径，二者不可直接等价比较。'+
   '<br><b>数据质量（异常排除）：</b>半钢轮胎产能利用率序列含 <b>7 个物理不可能异常值</b>（2015 年 1–8 月部分月份 >100%，最大 298968%），已按“产能利用率取值范围 0–100%”规则<b>从统计与图表中显式排除并标注</b>（非仅靠截尾掩盖），未排除部分均值/分位带按 5–95% 截尾。源外部工作簿口径未独立核实，建议核对源数据。'+
-  '<br><b>严守规则：</b>缺失不填0、不插值；低频不伪造日度；切换对比方式/频率时相关性与领先滞后均真实重算；相关性/领先滞后仅基于真实匹配样本并标注样本量与周期；领先滞后≠因果；结论区分事实/推测/盘面联动/结构响应/事实对照；盘面联动与背离扫描不构成价格预测依据，未据利润变化直接预测RU/NR涨跌。未新增任何无数据支持的指标。';
+  '<br><b>严守规则：</b>缺失不填0、不插值；低频不伪造日度；切换对比方式/频率/自定义滞后时相关性与领先滞后均真实重算；相关性/领先滞后仅基于真实匹配样本并标注样本量与周期；领先滞后≠因果；相关矩阵为差分相关、仅纳入重叠样本≥30的对，成员频率不一致时统一聚合到周频并标注；结论区分事实/推测/盘面联动/结构响应/事实对照；盘面联动、背离扫描与相关矩阵不构成价格预测依据，未据利润变化直接预测RU/NR涨跌。未新增任何无数据支持的指标。';
 
 document.getElementById('footer').innerHTML='天然橡胶产业链利润分析 · 升级版 ｜ 数据截至 '+P.meta.asof+' ｜ 由 WorkBuddy 自动生成 ｜ 共 '+countInd()+' 指标 / '+P.linkage.length+' 联动对';
 
@@ -540,6 +610,7 @@ document.getElementById('footer').innerHTML='天然橡胶产业链利润分析 �
 renderSummary();
 renderIndicators();
 renderDivScan();
+renderCorrMatrix();
 initPairSel();
 onPairChange();
 </script>

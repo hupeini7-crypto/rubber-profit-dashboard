@@ -353,6 +353,24 @@ def leadlag_mode(sx, sy, mode):
     return dict(lags=lags,corrs=corrs,ns=ns,best_lag=lags[best_i],best_corr=corrs[best_i],n=int(len(dfj)))
 
 MODE_LABEL={'level':'水平值','diff':'差分(一阶变化)','return':'涨跌幅(%)'}
+
+def lag_scan(sx, sy, freq, mode, maxlag):
+    """自定义滞后扫描：lag=k 表示 Y 滞后 k 期（等价 X 领先 k 期），corr(x_t, y_{t-k})；期=该频率下的样本间隔。"""
+    a=transform(sx,freq,mode); b=transform(sy,freq,mode)
+    dfj=pd.concat([a,b],axis=1).dropna(); dfj.columns=['x','y']
+    if len(dfj)<8: return None
+    lags=list(range(0,maxlag+1)); corrs=[]; ns=[]
+    for L in lags:
+        yl=dfj['y'].shift(L)
+        sub=pd.concat([dfj['x'],yl],axis=1).dropna(); sub.columns=['x','y']
+        ns.append(int(len(sub)))
+        corrs.append(round(float(sub['x'].corr(sub['y'])),3) if len(sub)>3 else None)
+    valid=[(abs(c),i) for i,c in enumerate(corrs) if c is not None]
+    if not valid: return None
+    _,bi=max(valid)
+    return dict(lags=lags,corrs=corrs,ns=ns,best_lag=lags[bi],best_corr=corrs[bi],n=int(len(dfj)))
+
+LAG_MAX={'daily':20,'weekly':8,'monthly':6}
 def make_concl(ltype, xname, yname, mode, r, sx, sy, unitx, unity, factual):
     dchg_x, lat_x = recent_change(sx, 20); dchg_y, lat_y = recent_change(sy, 20)
     mlab = MODE_LABEL[mode]
@@ -391,7 +409,11 @@ for pid,sa,xc,sb,yc in LINK_PAIRS:
         ll=leadlag_mode(sx_f,sy_f,mode)
         r0=(freqs.get(df) or freqs.get('daily') or {}).get('corr','-')
         concl=make_concl(ltype,xc,yc,mode,r0,sx_f,sy_f,UNIT.get(xc,''),UNIT.get(yc,''),factual)
-        modes[mode]=dict(freqs=freqs, leadlag=ll, concl=concl)
+        scans={}
+        for f,ml in LAG_MAX.items():
+            sc=lag_scan(sx_f,sy_f,f,mode,ml)
+            if sc: scans[f]=sc
+        modes[mode]=dict(freqs=freqs, leadlag=ll, lag_scan=scans, concl=concl)
     xs=sx_f.dropna().values; ys=sy_f.dropna().values
     cross=(xs.min()<0<xs.max()) or (ys.min()<0<ys.max())
     linkage.append(dict(id=pid, group=('nr' if ltype=='nr' else 'structural'), xlabel=xc, ylabel=yc,
@@ -570,33 +592,97 @@ downstream_op={t:op_block(t) for t in ['全钢','半钢']}
 asof_daily=max([v for k,v in asof.items() if '产能利用率' not in k[1] and '产量：' not in k[1] and '库存可用天数' not in k[1]])
 asof_weekly=max([v for k,v in asof.items() if ('产能利用率' in k[1]) or ('产量：' in k[1]) or ('库存可用天数' in k[1])])
 
-# 10月9日窗口 vs 往年同期（含国庆节假日提示）
-def oct_window_analysis():
-    out=[]; tire=['全钢轮胎利润','半钢轮胎利润','全钢轮胎：产能利用率：中国','半钢轮胎：产能利用率：中国',
-                 '全钢轮胎：产量：山东','半钢轮胎：产量：山东','全钢轮胎：库存可用天数：山东','半钢轮胎：库存可用天数：山东']
-    for name in tire:
+# 最新月度窗口 vs 往年同期（窗口随数据更新自动推进；当月观测不足时自动回退上一个完整月）
+TIRE_LIST=['全钢轮胎利润','半钢轮胎利润','全钢轮胎：产能利用率：中国','半钢轮胎：产能利用率：中国',
+           '全钢轮胎：产量：山东','半钢轮胎：产量：山东','全钢轮胎：库存可用天数：山东','半钢轮胎：库存可用天数：山东']
+
+def month_window_analysis():
+    out=[]
+    def cnt_in(ss, yr, mon, daymax):
+        return int(len(ss[(ss.index.year==yr)&(ss.index.month==mon)&(ss.index.day<=daymax)].dropna()))
+    # 统一窗口：以周度经营指标最新日期所在月为候选，日范围 1 日 ~ 最新日
+    wyr, wmon, wday = asof_weekly.year, asof_weekly.month, asof_weekly.day
+    min_cnt = min([cnt_in(series[('下游',n)], wyr, wmon, wday) for n in TIRE_LIST if ('下游',n) in series] or [0])
+    fallback=False
+    if min_cnt < 2:
+        fallback=True
+        prev_end = pd.Timestamp(wyr, wmon, 1) - pd.Timedelta(days=1)
+        wyr, wmon, wday = prev_end.year, prev_end.month, int(prev_end.day)
+    years=[2023,2024,2025]
+    for name in TIRE_LIST:
         ss=series.get(('下游',name))
         if ss is None: continue
-        res={}
-        for yr in [2023,2024,2025,2026]:
-            sub=ss[(ss.index.year==yr)&(ss.index.month==10)&(ss.index.day>=1)&(ss.index.day<=15)]
-            if len(sub)>0: res[yr]=round(float(sub.mean()),3)
-        if 2026 in res and any(y<2026 for y in res):
-            prev_avg=round(float(np.mean([res[y] for y in res if y<2026])),3)
-            cur=res[2026]; delta=round(cur-prev_avg,3)
-            out.append(dict(name=name,unit=UNIT.get(name,''),values=res,prev_avg=prev_avg,cur=cur,delta=delta,
+        res={}; ns={}
+        for yr in years+[wyr]:
+            sub=ss[(ss.index.year==yr)&(ss.index.month==wmon)&(ss.index.day<=wday)].dropna()
+            if len(sub)>0:
+                res[yr]=round(float(sub.mean()),3); ns[yr]=int(len(sub))
+        if wyr in res and any(y<wyr for y in res):
+            prev_avg=round(float(np.mean([res[y] for y in res if y<wyr])),3)
+            cur=res[wyr]; delta=round(cur-prev_avg,3)
+            out.append(dict(name=name,unit=UNIT.get(name,''),values=res,ns=ns,prev_avg=prev_avg,cur=cur,delta=delta,
                             flag=('偏高' if delta>0 else ('偏低' if delta<0 else '持平'))))
-    note='10月1–7日为国庆假期，周度统计口径在假期所在周观测数可能减少；跨年窗口比较需注意节假日错位与统计周期差异，不能据此直接判定趋势突变。'
-    return out,note
-oct_window, oct_note = oct_window_analysis()
+    win_desc='%d年%d月1–%d日'%(wyr,wmon,wday) if not fallback else '%d年%d月（完整月）'%(wyr,wmon)
+    note=('窗口随数据更新自动推进：当前窗口 = <b>%s</b>（周度经营指标截至 %s）。'%(win_desc,asof_weekly)) + \
+         ('当月有效观测尚少（最少指标 n=%d<2），已自动回退到<b>上一个完整月份</b>保证样本可比。'%min_cnt if fallback else '') + \
+         '窗口内取该年该月 1 日至窗口日的有效观测均值；往年取同月同日范围（同口径对齐）。若窗口覆盖 10 月，注意 10月1–7日国庆假期所在周观测数可能减少；跨年窗口比较需注意节假日错位与统计周期差异，不能据此直接判定趋势突变。'
+    meta=dict(year=wyr, month=wmon, day=wday, fallback=fallback, desc=win_desc, min_cnt=min_cnt)
+    return out, note, meta
+
+month_window, month_note, month_window_meta = month_window_analysis()
+
+# ---------------- 跨指标相关矩阵（核心 10 + NR收盘价；一阶差分相关，避免水平趋势伪相关）----------------
+NAME2KEY={}
+for (s,c) in series:
+    NAME2KEY.setdefault(c,(s,c))
+
+def corr_matrix_analysis():
+    members=[d['name'] for d in core]
+    if ('中游','NR收盘价') in series and 'NR收盘价' not in members:
+        members=members+['NR收盘价']
+    def build(freq):
+        labels=[]; cols=[]
+        for nm in members:
+            key=NAME2KEY.get(nm)
+            if key is None: continue
+            ss=filt(series[key],key)
+            if freq=='weekly':
+                r=ss.resample('W').mean().dropna()
+            else:
+                tmp=ss.dropna()
+                if tmp.empty: continue
+                med=float(tmp.index.to_series().diff().dt.days.median()) if len(tmp)>1 else 1
+                if med>=5: continue  # 周度经营指标不进入日度矩阵（频率不一致不可比）
+                r=tmp
+            d=r.diff().dropna()
+            if len(d)<30: continue
+            labels.append(nm); cols.append(d)
+        n=len(labels)
+        R=[[None]*n for _ in range(n)]; N=[[0]*n for _ in range(n)]
+        for i in range(n):
+            for j in range(n):
+                if i==j:
+                    R[i][j]=1.0; N[i][j]=int(len(cols[i])); continue
+                jn=pd.concat([cols[i],cols[j]],axis=1).dropna()
+                if len(jn)<30: continue
+                R[i][j]=round(float(jn.iloc[:,0].corr(jn.iloc[:,1])),3)
+                N[i][j]=int(len(jn))
+        start=str(min([c.index.min() for c in cols]).date()) if cols else ''
+        end=str(max([c.index.max() for c in cols]).date()) if cols else ''
+        return dict(labels=labels, r=R, n=N, start=start, end=end, min_overlap=30,
+                    transform='一阶差分（变化额）',
+                    note=('全员统一聚合到周频（W均值）后取一阶差分，保证频率一致' if freq=='weekly' else '仅含日度指标（周度经营指标因频率不一致不纳入）'))
+    return dict(weekly=build('weekly'), daily=build('daily'))
+
+corr_matrix=corr_matrix_analysis()
 
 summary=dict(
     asof=str(max([v for v in asof.values()])), asof_daily=str(asof_daily), asof_weekly=str(asof_weekly),
     strongest=strong, weakest=weak, movers_up=movers_up, movers_down=movers_down,
     divergence=(divergence_text,round(gap,1) if gap is not None else None,div_weeks,div_since),
     driver_details=driver_details, seg_avg_q=seg_avg_q, core=core, upstream_spread=upstream_spread,
-    downstream_op=downstream_op, oct_window=oct_window, oct_note=oct_note,
-    market_divergence=market_divergence, nr_scan=nr_scan, refresh=REFRESH_STATUS)
+    downstream_op=downstream_op, month_window=month_window, month_note=month_note, month_window_meta=month_window_meta,
+    market_divergence=market_divergence, nr_scan=nr_scan, corr_matrix=corr_matrix, refresh=REFRESH_STATUS)
 
 # ---------------- 组装指标数据 ----------------
 segments={}
@@ -650,7 +736,8 @@ print('movers_up(by 分位变化):',[(d['name'],d['chg20_q']) for d in movers_up
 print('movers_down(by 分位变化):',[(d['name'],d['chg20_q']) for d in movers_down])
 print('asof_daily',asof_daily,'asof_weekly',asof_weekly)
 print('EXCL counts:',{k[1]:len(v) for k,v in EXCL.items()})
-print('oct_window items:',len(oct_window))
+print('month_window items:',len(month_window),'| window:',month_window_meta['desc'],'| fallback:',month_window_meta['fallback'])
+print('corr_matrix labels:',{'weekly':len(corr_matrix['weekly']['labels']),'daily':len(corr_matrix['daily']['labels'])})
 print('linkage pairs:',len(linkage),'| groups:',{'structural':sum(1 for l in linkage if l['group']=='structural'),'nr':sum(1 for l in linkage if l['group']=='nr')})
 print('market_divergence items:',len(market_divergence))
 print('segments indicators:',{k:len(v['indicators']) for k,v in segments.items()})

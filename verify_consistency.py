@@ -66,6 +66,6 @@ print(json.dumps(P['meta']['refresh'] if 'refresh' in P['meta'] else P['summary'
 
 # oct window
 print('\n=== 10月窗口对比 ===')
-for o in P['summary']['oct_window']:
-    print('  %-30s 2026=%.2f 往年均值=%.2f delta=%+.2f %s' % (o['name'],o['cur'],o['prev_avg'],o['delta'],o['flag']))
-print('  注:', P['summary']['oct_note'])
+for o in P['summary']['month_window']:
+    print('  %-30s 当前窗口=%.2f 往年均值=%.2f delta=%+.2f %s' % (o['name'],o['cur'],o['prev_avg'],o['delta'],o['flag']))
+print('  窗口:', P['summary']['month_window_meta']['desc'], '| 注:', P['summary']['month_note'])
