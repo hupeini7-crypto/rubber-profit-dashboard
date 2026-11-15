@@ -16,6 +16,9 @@ generated-images/
 # 临时脚本（8901/8899 陈旧启动器不随仓库发布）
 launch2.py
 
+# 临时检查脚本
+_*.py
+
 # Python
 __pycache__/
 *.pyc
